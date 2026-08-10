@@ -1,0 +1,9 @@
+node_modules/
+output/
+dist/
+.env
+.env.*
+*.log
+.vercel
+.vscode/
+Thumbs.db
