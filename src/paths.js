@@ -18,6 +18,10 @@ export function stateFile(runtimeDir) {
   return path.join(logDir(runtimeDir), 'supervisor.json');
 }
 
+export function sourceFile(runtimeDir) {
+  return path.join(runtimeDir, 'output', 'source.json');
+}
+
 export function runtimeIsValid(runtimeDir) {
   return (
     fs.existsSync(path.join(runtimeDir, 'apps', 'api', 'src', 'server.js')) &&

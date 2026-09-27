@@ -1,6 +1,6 @@
 # TerraFlow Desktop Runtime — Implementation Plan
 
-Status: **GREENFIELD / PLANNED**. Nothing here is implemented. This is the Desktop track's own plan; the Core/Web roadmap lives in the Core repository and is intentionally separate.
+Status: **IMPLEMENTED** (runtime layer v0.1.0 — see `../src/`, `../test/`, and the README quick start). This was the Desktop track's original plan; the Core/Web roadmap lives in the Core repository and is intentionally separate. Failure/recovery requirements below remain the reference contract.
 
 ## Goals
 

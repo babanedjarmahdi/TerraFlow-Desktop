@@ -1,6 +1,6 @@
-# Testing Strategy (Planned)
+# Testing Strategy
 
-Status: **PLANNED** — no tests exist yet in this repository. The matrix below is the acceptance contract for the Desktop Runtime track (Phase 7 of `PLAN.md`).
+Status: **UNIT TESTS IMPLEMENTED / ACCEPTANCE MATRIX PLANNED** — unit and integration tests for the runtime layer live in `test/` and run with `npm test` (`node --test`). The matrix below is the remaining acceptance contract for the Desktop Runtime track (Phase 7 of `PLAN.md`), driven against a real install dir.
 
 Test runner guidance: Core uses Node's built-in `node --test`. Desktop integration scenarios are expected to be driven by a PowerShell/Node harness against a real install dir. Each scenario below lists its objective and pass criteria.
 

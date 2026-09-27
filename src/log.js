@@ -3,13 +3,33 @@ import path from 'path';
 
 export function createLogger({ dir = null, tee = true } = {}) {
   const file = dir ? path.join(dir, 'runtime.log') : null;
-  if (file) fs.mkdirSync(path.dirname(file), { recursive: true });
-  const write = (level, msg) => {
-    if (!file) return;
+  let fd = null;
+
+  const getFd = () => {
+    if (fd !== null) return fd;
+    if (!file) return null;
     try {
-      fs.appendFileSync(file, `${new Date().toISOString()}  ${level}  ${msg}\n`);
-    } catch {}
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fd = fs.openSync(file, 'a');
+    } catch {
+      fd = null;
+    }
+    return fd;
   };
+
+  const write = (level, msg) => {
+    const f = getFd();
+    if (f === null) return;
+    try {
+      fs.writeSync(f, `${new Date().toISOString()}  ${level}  ${msg}\n`);
+    } catch {
+      try {
+        fs.closeSync(f);
+      } catch {}
+      fd = null;
+    }
+  };
+
   return {
     info(msg) {
       write('INFO', msg);

@@ -1,19 +1,25 @@
 {
   "name": "terraflow-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "TerraFlow Desktop Runtime - hosts the Core API locally so watchers run independent of any browser",
   "engines": {
-    "node": ">=18"
+    "node": ">=18.13"
   },
   "bin": {
     "terraflow": "bin/terraflow.mjs"
   },
   "scripts": {
-    "launch": "node bin/terraflow.mjs launch --core .",
+    "start": "node bin/terraflow.mjs",
+    "setup": "node bin/terraflow.mjs setup",
+    "launch": "node bin/terraflow.mjs launch",
+    "stop": "node bin/terraflow.mjs stop",
     "status": "node bin/terraflow.mjs status",
     "health": "node bin/terraflow.mjs health",
-    "help": "node bin/terraflow.mjs help"
+    "help": "node bin/terraflow.mjs help",
+    "version": "node bin/terraflow.mjs version",
+    "build:release": "node scripts/build-release.mjs",
+    "test": "node --test \"test/*.test.js\""
   }
 }

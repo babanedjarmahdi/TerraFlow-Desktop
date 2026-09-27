@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { writeFileSync } from 'fs';
 import { webBundleExists } from './api.js';
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -11,7 +10,10 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.vite', 'dist', 'coverage', 
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
-export async function install({ coreDir, installDir, log, withDeps = true }) {
+export async function install({ coreDir, installDir, log, withDeps = true, desktopDir = null }) {
+  if (path.resolve(coreDir) === path.resolve(installDir)) {
+    throw new Error('--core must point at a Core checkout that differs from the install dir');
+  }
   if (!fs.existsSync(path.join(coreDir, 'package.json'))) {
     throw new Error(`not a TerraFlow Core checkout: ${coreDir}`);
   }
@@ -19,6 +21,7 @@ export async function install({ coreDir, installDir, log, withDeps = true }) {
     throw new Error(`missing Core API entry in ${coreDir}`);
   }
 
+  const desktopRoot = desktopDir ? path.resolve(desktopDir) : DESKTOP_ROOT;
   fs.mkdirSync(installDir, { recursive: true });
 
   for (const file of TOP_LEVEL_FILES) {
@@ -34,7 +37,11 @@ export async function install({ coreDir, installDir, log, withDeps = true }) {
     ? path.join(coreDir, '.env')
     : path.join(coreDir, '.env.example');
   if (!fs.existsSync(path.join(installDir, '.env'))) {
-    fs.copyFileSync(envSrc, path.join(installDir, '.env'));
+    if (fs.existsSync(envSrc)) {
+      fs.copyFileSync(envSrc, path.join(installDir, '.env'));
+    } else {
+      log.warn('no .env or .env.example found in Core - skipped');
+    }
   }
 
   copyTree(path.join(coreDir, 'packages'), path.join(installDir, 'packages'));
@@ -42,37 +49,48 @@ export async function install({ coreDir, installDir, log, withDeps = true }) {
   copyTree(path.join(coreDir, 'apps', 'api', 'public'), path.join(installDir, 'apps', 'api', 'public'));
 
   const apiPkg = path.join(coreDir, 'apps', 'api', 'package.json');
-  if (fs.existsSync(apiPkg)) fs.copyFileSync(apiPkg, path.join(installDir, 'apps', 'api', 'package.json'));
+  if (fs.existsSync(apiPkg)) {
+    const apiDst = path.join(installDir, 'apps', 'api', 'package.json');
+    fs.mkdirSync(path.dirname(apiDst), { recursive: true });
+    fs.copyFileSync(apiPkg, apiDst);
+  }
 
-  const hasUserData =
-    fs.existsSync(path.join(installDir, 'output', 'jobs')) ||
-    fs.existsSync(path.join(installDir, 'output', 'json')) ||
-    fs.existsSync(path.join(installDir, 'output', 'templates'));
+  const outDir = path.join(installDir, 'output');
+  const hasUserData = fs.existsSync(outDir) && fs.readdirSync(outDir).some((n) => n !== 'logs');
   if (!hasUserData) {
-    copyTree(path.join(coreDir, 'output'), path.join(installDir, 'output'), ['logs', 'watcher.log']);
+    copyTree(path.join(coreDir, 'output'), outDir, ['logs', 'watcher.log']);
   } else {
     log.info('existing data dir preserved (upgrade-safe)');
   }
 
-  copyTree(path.join(DESKTOP_ROOT, 'bin'), path.join(installDir, 'bin'));
-  copyTree(path.join(DESKTOP_ROOT, 'src'), path.join(installDir, 'src'));
-  fs.copyFileSync(path.join(DESKTOP_ROOT, 'package.json'), path.join(installDir, 'desktop-package.json'));
+  copyTree(path.join(desktopRoot, 'bin'), path.join(installDir, 'bin'));
+  copyTree(path.join(desktopRoot, 'src'), path.join(installDir, 'src'));
+  copyTree(path.join(desktopRoot, 'installer'), path.join(installDir, 'installer'));
+  copyTree(path.join(desktopRoot, 'assets'), path.join(installDir, 'assets'));
+  fs.copyFileSync(path.join(desktopRoot, 'package.json'), path.join(installDir, 'desktop-package.json'));
+
+  writeSourceRecord(installDir, { coreDir, desktopDir: desktopRoot });
 
   if (!webBundleExists(installDir)) {
-    log.warn('no web bundle found in Core apps/api/public - UI will 404 until a build is staged (watchers still run via API)');
+    log.warn(
+      'no web bundle found in Core apps/api/public - UI will 404 until a build is staged (watchers still run via API)'
+    );
   }
 
   if (withDeps) {
-    const res = await runNpmCi(installDir);
+    let res = await runNpm(installDir, ['ci', '--omit=dev']);
     if (res.code !== 0) {
-      log.warn('npm ci failed - install may still run if node_modules already exist');
+      log.warn('npm ci failed (missing lockfile?) - falling back to npm install');
+      res = await runNpm(installDir, ['install', '--omit=dev', '--no-audit', '--no-fund']);
+    }
+    if (res.code !== 0) {
+      log.warn('npm install failed - the app may not start until dependencies are installed');
     } else {
       log.info('production dependencies installed');
     }
   }
 
-  const { nodeExe, mjs } = { nodeExe: process.execPath, mjs: path.join(installDir, 'bin', 'terraflow.mjs') };
-  generateScripts({ installDir, nodeExe, mjs, log });
+  generateScripts({ installDir, nodeExe: process.execPath, mjs: path.join(installDir, 'bin', 'terraflow.mjs'), log });
 
   return installDir;
 }
@@ -80,29 +98,53 @@ export async function install({ coreDir, installDir, log, withDeps = true }) {
 function copyTree(src, dst, skip = SKIP_DIRS) {
   if (!fs.existsSync(src)) return;
   const skipSet = skip instanceof Set ? skip : new Set(skip);
-  fs.mkdirSync(dst, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    if (skipSet.has(entry.name)) continue;
-    const from = path.join(src, entry.name);
-    const to = path.join(dst, entry.name);
-    if (entry.isDirectory()) copyTree(from, to, skipSet);
-    else fs.copyFileSync(from, to);
+  fs.cpSync(src, dst, {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: (s) => !skipSet.has(path.basename(s)),
+  });
+}
+
+export function sourceRecordPath(installDir) {
+  return path.join(installDir, 'output', '.source.json');
+}
+
+export function readSourceRecord(installDir) {
+  try {
+    const raw = fs.readFileSync(sourceRecordPath(installDir), 'utf8');
+    const stripped = raw.startsWith('\uFEFF') ? raw.slice(1) : raw;
+    return JSON.parse(stripped);
+  } catch {
+    return null;
   }
 }
 
-function runNpmCi(cwd) {
+export function writeSourceRecord(installDir, record) {
+  fs.mkdirSync(path.dirname(sourceRecordPath(installDir)), { recursive: true });
+  fs.writeFileSync(sourceRecordPath(installDir), JSON.stringify(record, null, 2), 'utf8');
+}
+
+function runNpm(cwd, npmArgs) {
   return new Promise((resolve) => {
-    const args =
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const argStr = npmArgs.join(' ');
+    const [cmd, args] =
       process.platform === 'win32'
-        ? ['/d', '/s', '/c', `${npmCmd} ci --omit=dev`]
-        : ['ci', '--omit=dev'];
-    const child = spawn(process.platform === 'win32' ? 'cmd.exe' : npmCmd, args, {
+        ? ['cmd.exe', ['/d', '/s', '/c', `${npmCmd} ${argStr}`]]
+        : [npmCmd, npmArgs];
+    const child = spawn(cmd, args, {
       cwd,
       windowsHide: true,
       stdio: 'inherit',
     });
-    child.on('close', (code) => resolve({ code }));
+    child.on('error', (err) => finish({ code: 127, error: err }));
+    child.on('close', (code) => finish({ code }));
   });
 }
 
@@ -117,22 +159,22 @@ function vbsRun(nodeExe, mjs, flags) {
 
 function generateScripts({ installDir, nodeExe, mjs, log }) {
   const launchBat = path.join(installDir, 'TerraFlow.bat');
-  writeFileSync(launchBat, `@echo off\r\n"${nodeExe}" "${mjs}" launch --quiet\r\n`);
+  fs.writeFileSync(launchBat, `@echo off\r\n"${nodeExe}" "${mjs}" launch --quiet\r\n`);
 
   const launchVbs = path.join(installDir, 'TerraFlow.vbs');
-  writeFileSync(
+  fs.writeFileSync(
     launchVbs,
     `Set sh = CreateObject("Wscript.Shell")\r\nsh.CurrentDirectory = ${q(installDir)}\r\n${vbsRun(nodeExe, mjs, 'launch --quiet')}\r\n`
   );
 
   const startupVbs = path.join(installDir, 'startup.vbs');
-  writeFileSync(
+  fs.writeFileSync(
     startupVbs,
     `Set sh = CreateObject("Wscript.Shell")\r\nsh.CurrentDirectory = ${q(installDir)}\r\n${vbsRun(nodeExe, mjs, 'launch --quiet --no-browser')}\r\n`
   );
 
   const uninstallCmd = path.join(installDir, 'uninstall.cmd');
-  writeFileSync(uninstallCmd, `@echo off\r\n"${nodeExe}" "${mjs}" uninstall\r\npause\r\n`);
+  fs.writeFileSync(uninstallCmd, `@echo off\r\n"${nodeExe}" "${mjs}" uninstall\r\npause\r\n`);
 
   log.info(`launcher written: ${launchVbs}`);
   log.info(`double-click ${launchVbs} to run TerraFlow; startup.vbs handles login autostart`);

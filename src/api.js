@@ -36,16 +36,24 @@ export function spawnApi(runtimeDir, { port = resolvePort() } = {}) {
       TERRAFLOW_RUNTIME_DIR: runtimeDir,
     },
   });
-  child.once('spawn', () => {
-    fs.closeSync(outFd);
-    fs.closeSync(errFd);
-  });
+  let closed = false;
+  const closeFds = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      fs.closeSync(outFd);
+      fs.closeSync(errFd);
+    } catch {}
+  };
+  child.once('spawn', closeFds);
+  child.once('error', closeFds);
+  child.on('error', () => {});
   child.unref();
   return child;
 }
 
 export function isProcessAlive(pid) {
-  if (!pid) return false;
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -54,11 +62,48 @@ export function isProcessAlive(pid) {
   }
 }
 
-export function kill(pid) {
-  if (!isProcessAlive(pid)) return;
+export async function kill(pid, { timeoutMs = 3000 } = {}) {
+  if (!isProcessAlive(pid)) return false;
+  if (process.platform === 'win32') {
+    await execSimple('taskkill', ['/pid', String(pid), '/T', '/F'], 5000);
+    return !isProcessAlive(pid);
+  }
   try {
     process.kill(pid, 'SIGTERM');
-  } catch {}
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessAlive(pid) && Date.now() < deadline) {
+    await wait(100);
+  }
+  if (isProcessAlive(pid)) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {}
+  }
+  return !isProcessAlive(pid);
+}
+
+function execSimple(cmd, args, timeoutMs) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { windowsHide: true, stdio: 'ignore' });
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      finish();
+    }, timeoutMs);
+    child.on('error', finish);
+    child.on('close', finish);
+  });
 }
 
 export async function portOwnerIsApi(port = resolvePort()) {
@@ -66,15 +111,25 @@ export async function portOwnerIsApi(port = resolvePort()) {
   const base = apiBaseUrl(port);
   if (await isTerraflowHealthy(base)) return { present: true, api: true, healthy: true };
   const probe = await getJson(`${base}/api/health`);
-  const apiLike = probe.ok && probe.data && typeof probe.data.status !== 'undefined';
+  const apiLike = Boolean(probe.ok && probe.data && typeof probe.data.status !== 'undefined');
   return { present: true, api: apiLike, healthy: false };
 }
 
-export async function waitUntilHealthy({ port = resolvePort(), timeoutMs = 30000, stepMs = 1000, log } = {}) {
+export async function waitUntilHealthy({
+  port = resolvePort(),
+  timeoutMs = 30000,
+  stepMs = 1000,
+  log,
+  abort,
+} = {}) {
   const base = apiBaseUrl(port);
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
+    if (abort && abort()) {
+      if (log) log.info('health wait aborted (stop requested)');
+      return { healthy: false, aborted: true, last };
+    }
     const r = await getJson(`${base}/api/health`);
     if (r.ok && r.status === 200 && r.data && r.data.status === 'ok') {
       if (log) log.info(`API healthy at ${base} (db: ${r.data.db})`);

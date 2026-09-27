@@ -1,70 +1,170 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { apiBaseUrl, isProcessAlive, resolvePort, waitUntilHealthy, webBundleExists } from './api.js';
+import {
+  apiBaseUrl,
+  isProcessAlive,
+  portOwnerIsApi,
+  resolvePort,
+  waitUntilHealthy,
+  webBundleExists,
+} from './api.js';
 import { ensurePostgres } from './docker.js';
 import { createLogger } from './log.js';
 import { isTerraflowHealthy, portOpen } from './net.js';
 import { logDir } from './paths.js';
-import { Supervisor, stopHere, supervisorState } from './supervisor.js';
+import {
+  Supervisor,
+  clearStopRequest,
+  requestStop,
+  stopHere,
+  stopRequested,
+  supervisorState,
+} from './supervisor.js';
 
-export async function launch({ runtimeDir, port = resolvePort(), foreground = false, openBrowser = true, withDb = true, log, quiet = false }) {
+export async function launch({
+  runtimeDir,
+  port = resolvePort(),
+  foreground = false,
+  openBrowser = true,
+  withDb = true,
+  log,
+  quiet = false,
+}) {
   const logger = log || createLogger({ dir: logDir(runtimeDir), tee: !quiet });
   const base = apiBaseUrl(port);
+  const shouldStop = () => stopRequested(runtimeDir);
 
-  const occupied = await portOpen(port);
-  if (occupied) {
-    const healthy = await isTerraflowHealthy(base);
-    if (healthy) {
-      logger.info(`already running and healthy at ${base}`);
-      if (openBrowser) openDefaultBrowser(base);
-      return { status: 'already-running', healthy: true };
+  clearStopRequest(runtimeDir);
+
+  const onSignal = () => requestStop(runtimeDir);
+  if (foreground) {
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+  }
+
+  try {
+    const supState = supervisorState(runtimeDir);
+    const supAlive = Boolean(supState?.supervisorPid && isProcessAlive(supState.supervisorPid));
+
+    const occupied = await portOpen(port);
+    if (occupied) {
+      const owner = await portOwnerIsApi(port);
+      if (owner.api) {
+        let healthy = owner.healthy || (await isTerraflowHealthy(base));
+        if (!healthy) {
+          logger.info(`TerraFlow API present on ${base} but unhealthy - waiting for recovery`);
+          healthy = (await waitUntilHealthy({ port, timeoutMs: 30000, log: logger, abort: shouldStop }))
+            .healthy;
+        } else {
+          logger.info(`already running and healthy at ${base}`);
+        }
+        if (healthy && openBrowser) openDefaultBrowser(base);
+        if (shouldStop()) return { status: 'stopped' };
+        return { status: 'already-running', healthy, supervised: supAlive, port };
+      }
+      logger.warn(`port ${port} is occupied by a non-TerraFlow process - refusing to start another instance`);
+      return { status: 'port-conflict' };
     }
-    logger.warn(`port ${port} is occupied by a non-TerraFlow process - refusing to start another instance`);
-    return { status: 'port-conflict' };
+
+    if (supAlive) {
+      logger.info('a supervisor is already running - waiting for the API to come back...');
+      const h = await waitUntilHealthy({ port, timeoutMs: 60000, log: logger, abort: shouldStop });
+      if (shouldStop()) return { status: 'stopped' };
+      if (h.healthy && openBrowser) openDefaultBrowser(base);
+      return {
+        status: h.healthy ? 'already-running' : 'started',
+        healthy: h.healthy,
+        supervised: true,
+        base,
+        port,
+      };
+    }
+
+    let pg;
+    if (withDb) {
+      pg = await ensurePostgres({ runtimeDir, log: logger, shouldStop });
+      if (pg.status === 'aborted' || shouldStop()) {
+        clearStopRequest(runtimeDir);
+        logger.info('launch aborted before start');
+        return { status: 'stopped' };
+      }
+    } else {
+      pg = { status: 'skipped' };
+    }
+
+    if (shouldStop()) {
+      clearStopRequest(runtimeDir);
+      return { status: 'stopped' };
+    }
+
+    const supervisor = new Supervisor({ runtimeDir, port, log: logger });
+    let loopPromise = null;
+    let result;
+    if (foreground) {
+      loopPromise = supervisor.start({ foreground: true });
+      result = { supervised: true, foreground: true };
+    } else {
+      result = supervisor.daemonize();
+    }
+
+    const h = await waitUntilHealthy({ port, timeoutMs: 60000, log: logger, abort: shouldStop });
+    if (h.healthy && openBrowser) {
+      openDefaultBrowser(base);
+    } else if (!h.healthy && !shouldStop()) {
+      logger.warn('API did not become healthy within 60s');
+    }
+
+    if (foreground) {
+      const fin = await loopPromise;
+      return {
+        status: 'stopped',
+        supervised: true,
+        foreground: true,
+        restarts: fin?.restarts ?? 0,
+        apiPid: fin?.apiPid ?? null,
+        postgres: pg.status,
+        port,
+      };
+    }
+
+    if (shouldStop()) return { status: 'stopped' };
+
+    return {
+      status: 'started',
+      healthy: h.healthy,
+      base,
+      postgres: pg.status,
+      db: h.healthy ? h.db : null,
+      supervised: result.supervised,
+      daemonPid: result.daemonPid || null,
+      apiPid: result.apiPid || null,
+      port,
+    };
+  } finally {
+    if (foreground) {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    }
   }
-
-  let pg;
-  if (withDb) {
-    pg = await ensurePostgres({ runtimeDir, log: logger });
-  } else {
-    pg = { status: 'skipped' };
-  }
-
-  const supervisor = new Supervisor({ runtimeDir, port, log: logger });
-  const result = await supervisor.start({ foreground });
-
-  const healthy = await waitUntilHealthy({ port, timeoutMs: 60000, log: logger });
-  if (healthy.healthy && openBrowser) openDefaultBrowser(base);
-
-  return {
-    status: 'started',
-    base,
-    postgres: pg.status,
-    db: healthy.healthy ? healthy.db : null,
-    supervised: result.supervised,
-    daemonPid: result.daemonPid || null,
-    apiPid: result.apiPid || null,
-    port,
-  };
 }
 
 export async function stop({ runtimeDir, port = resolvePort(), log, quiet = false }) {
   const logger = log || createLogger({ dir: logDir(runtimeDir), tee: !quiet });
-  return stopHere(runtimeDir, effectivePort(runtimeDir) || port, logger);
+  return stopHere(runtimeDir, port, logger);
 }
 
 export async function status({ runtimeDir, log, quiet = false }) {
   const logger = log || createLogger({ dir: logDir(runtimeDir), tee: !quiet });
-  const port = effectivePort(runtimeDir) || resolvePort();
   const state = supervisorState(runtimeDir);
+  const port = Number.isInteger(state?.port) && state.port > 0 ? state.port : resolvePort();
   const base = apiBaseUrl(port);
   const up = await portOpen(port);
   let healthy = null;
   if (up) {
     healthy = await isTerraflowHealthy(base);
   }
-  const result = {
+  return {
     runtimeDir,
     port,
     installed: fs.existsSync(path.join(runtimeDir, 'apps', 'api', 'src', 'server.js')),
@@ -72,13 +172,13 @@ export async function status({ runtimeDir, log, quiet = false }) {
     portOpen: up,
     healthy,
     supervisor: state,
+    supervisorAlive: Boolean(state?.supervisorPid && isProcessAlive(state.supervisorPid)),
     postgres: await portOpen(5432),
   };
-  return result;
 }
 
 export async function oneShotHealth({ runtimeDir }) {
-  return isTerraflowHealthy(apiBaseUrl(effectivePort(runtimeDir) || resolvePort()));
+  return isTerraflowHealthy(apiBaseUrl(effectivePort(runtimeDir)));
 }
 
 export function effectivePort(runtimeDir) {
@@ -88,12 +188,18 @@ export function effectivePort(runtimeDir) {
 }
 
 export function openDefaultBrowser(url) {
-  const escaped = url.replace(/&/g, '^&');
-  const cmd = process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', escaped] : [url];
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
-  child.unref();
-  return child;
+  const [cmd, args] =
+    process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+    return child;
+  } catch {
+    return null;
+  }
 }
 
 export function activePid(runtimeDir) {
@@ -106,7 +212,7 @@ export function activePid(runtimeDir) {
   }
 }
 
-export function isApiRunning(runtimeDir, port = resolvePort()) {
-  const pid = activePid(runtimeDir, port);
+export function isApiRunning(runtimeDir) {
+  const pid = activePid(runtimeDir);
   return Boolean(pid && isProcessAlive(pid));
 }

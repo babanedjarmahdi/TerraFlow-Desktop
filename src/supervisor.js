@@ -14,6 +14,31 @@ const DEFAULT_OPTS = {
   backoffMs: [2000, 4000, 8000, 15000, 30000],
 };
 
+export function stopFlagPath(runtimeDir) {
+  return path.join(logDir(runtimeDir), 'stop.flag');
+}
+
+export function stopRequested(runtimeDir) {
+  try {
+    return fs.existsSync(stopFlagPath(runtimeDir));
+  } catch {
+    return false;
+  }
+}
+
+export function requestStop(runtimeDir) {
+  try {
+    fs.mkdirSync(logDir(runtimeDir), { recursive: true });
+    fs.writeFileSync(stopFlagPath(runtimeDir), String(Date.now()), 'utf8');
+  } catch {}
+}
+
+export function clearStopRequest(runtimeDir) {
+  try {
+    fs.rmSync(stopFlagPath(runtimeDir), { force: true });
+  } catch {}
+}
+
 export class Supervisor {
   constructor({ runtimeDir, port, log, opts = {} }) {
     this.runtimeDir = runtimeDir;
@@ -45,6 +70,7 @@ export class Supervisor {
       detached: true,
       stdio: 'ignore',
     });
+    child.on('error', (err) => this.log.error(`failed to spawn supervisor daemon: ${err.message}`));
     child.unref();
     this.log.info(`background supervisor started (pid ${child.pid})`);
     return { supervised: true, daemonPid: child.pid };
@@ -54,11 +80,17 @@ export class Supervisor {
     return Date.now() - this.lastSpawnAt < this.opts.startTimeoutMs;
   }
 
+  async sleep(ms) {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (stopRequested(this.runtimeDir)) return;
+      await wait(Math.min(250, deadline - Date.now()));
+    }
+  }
+
   async runLoop() {
     this.startedAt = new Date().toISOString();
-    fs.rmSync(path.join(logDir(this.runtimeDir), 'stop.flag'), { force: true });
     const statePath = stateFile(this.runtimeDir);
-    const pidPath = path.join(logDir(this.runtimeDir), 'api.pid');
 
     const save = () =>
       writeJson(statePath, {
@@ -71,7 +103,7 @@ export class Supervisor {
         lastCheck: this.lastCheck,
       });
 
-    const stopNow = () => fs.existsSync(path.join(logDir(this.runtimeDir), 'stop.flag'));
+    const stopNow = () => stopRequested(this.runtimeDir);
 
     let failures = 0;
     let backoffIndex = 0;
@@ -81,9 +113,10 @@ export class Supervisor {
     while (true) {
       if (stopNow()) {
         this.log.info('stop requested - shutting down API');
-        kill(this.apiPid);
+        await kill(this.apiPid);
         this.status = 'stopped';
         save();
+        clearStopRequest(this.runtimeDir);
         break;
       }
 
@@ -99,7 +132,7 @@ export class Supervisor {
           this.log.info(`API healthy (pid ${this.apiPid})`);
         }
         save();
-        await wait(this.opts.pollMs);
+        await this.sleep(this.opts.pollMs);
         continue;
       }
 
@@ -109,7 +142,7 @@ export class Supervisor {
           this.log.info(`API (pid ${this.apiPid}) booting...`);
         }
         save();
-        await wait(this.opts.pollMs);
+        await this.sleep(this.opts.pollMs);
         continue;
       }
 
@@ -124,12 +157,13 @@ export class Supervisor {
         const attempt = this.restarts + 1;
         if (apiUp) {
           this.log.warn(`API unhealthy (pid ${this.apiPid}) - restarting in ${backoff}ms (attempt #${attempt})`);
-          kill(this.apiPid);
+          await kill(this.apiPid);
         } else {
           this.log.warn(`API shown as stopped - restarting in ${backoff}ms (attempt #${attempt})`);
         }
         this.restarts = attempt;
-        await wait(backoff);
+        await this.sleep(backoff);
+        if (stopNow()) continue;
         this.startApiProcess();
       } else if (!apiUp) {
         this.restarts += 1;
@@ -137,7 +171,7 @@ export class Supervisor {
       }
 
       save();
-      await wait(this.opts.pollMs);
+      await this.sleep(this.opts.pollMs);
     }
   }
 
@@ -156,32 +190,70 @@ export function supervisorState(runtimeDir) {
 
 export async function stopHere(runtimeDir, port, log) {
   const state = supervisorState(runtimeDir);
+  const supPid = state?.supervisorPid;
   const apiPid = readApiPid(runtimeDir, state?.apiPid);
+  const targetPort =
+    Number.isInteger(state?.port) && state.port > 0
+      ? state.port
+      : Number.isInteger(port) && port > 0
+        ? port
+        : null;
 
-  if (state?.supervisorPid && state.supervisorPid !== process.pid) {
-    log.info(`stopping supervisor (pid ${state.supervisorPid})`);
-    kill(state.supervisorPid);
+  const portWasOpen = targetPort ? await portOpen(targetPort) : false;
+
+  let killedSup = false;
+  let killedApi = false;
+
+  if (supPid && supPid !== process.pid && isProcessAlive(supPid)) {
+    requestStop(runtimeDir);
+    log.info(`stopping supervisor (pid ${supPid})`);
+    for (let i = 0; i < 24; i += 1) {
+      if (!isProcessAlive(supPid)) break;
+      await wait(250);
+    }
+    if (isProcessAlive(supPid)) {
+      log.warn(`supervisor did not exit gracefully - forcing (pid ${supPid})`);
+      await kill(supPid);
+    }
+    killedSup = true;
+    const apiPidAfter = readApiPid(runtimeDir, state?.apiPid);
+    if (apiPidAfter && isProcessAlive(apiPidAfter)) {
+      await kill(apiPidAfter);
+      killedApi = true;
+    }
   }
-  if (apiPid) {
+
+  if (apiPid && isProcessAlive(apiPid)) {
     log.info(`stopping API (pid ${apiPid})`);
-    kill(apiPid);
+    await kill(apiPid);
+    killedApi = true;
   }
-  if (!Number.isInteger(port) || port <= 0) {
+
+  if (!killedSup && !killedApi) {
+    clearStopRequest(runtimeDir);
+    return { stopped: true, already: true };
+  }
+
+  if (!targetPort || !portWasOpen) {
+    clearStopRequest(runtimeDir);
     return { stopped: true };
   }
+
   for (let i = 0; i < 20; i += 1) {
-    if (!(await portOpen(port))) {
-      log.info(`port ${port} is free`);
+    if (!(await portOpen(targetPort))) {
+      log.info(`port ${targetPort} is free`);
+      clearStopRequest(runtimeDir);
       return { stopped: true };
     }
     await wait(500);
   }
-  log.warn(`port ${port} still open after stop - you may need to stop it manually`);
+  log.warn(`port ${targetPort} still open after stop - you may need to stop it manually`);
+  clearStopRequest(runtimeDir);
   return { stopped: false };
 }
 
 function readApiPid(runtimeDir, pref) {
-  if (Number.isInteger(pref)) return pref;
+  if (Number.isInteger(pref) && pref > 0) return pref;
   try {
     const raw = fs.readFileSync(path.join(logDir(runtimeDir), 'api.pid'), 'utf8').trim();
     const n = Number(raw);

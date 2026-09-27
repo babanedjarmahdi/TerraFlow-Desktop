@@ -58,14 +58,49 @@ The Core repository (`TerraFlow` / `Aguira-Tunnel`) remains the source of truth 
 
 ## Status
 
-**GREENFIELD — NOT IMPLEMENTED.**
+**IMPLEMENTED — working runtime (v0.2.0).**
 
-This repository is currently documentation + reference material only. No launcher, installer, packaging, process supervisor, Docker orchestration or auto-start has been implemented here.
+- **One-click install:** double-click `Install-TerraFlow.cmd` → installs Node.js if missing (per-user, no admin), stages the Core, creates **Desktop + Start Menu shortcuts**, enables login autostart, and launches the app.
+- `bin/terraflow.mjs` + `src/` — full CLI and runtime: `setup` / `launch` / `stop` / `status` / `health` / `install` / `uninstall` / `autostart` / `version`.
+- Process supervision with health-check polling, crash detection and exponential backoff (2s → 30s), foreground or detached-daemon modes.
+- Docker/PostgreSQL 16 bootstrap (auto-starts Docker Desktop, `docker compose up`, bounded wait on 5432, graceful degradation).
+- Idempotent, upgrade-safe Windows installer (`%LOCALAPPDATA%\TerraFlow`, preserves `output/` user data), `.bat`/`.vbs` launchers, HKCU run-on-login autostart, data-preserving uninstall.
+- `npm test` — unit/integration tests (`node:test`).
+
+Documentation:
 
 - `docs/PLAN.md` — desktop implementation plan (phases 0–8, requirements, failure/recovery).
 - `docs/CONTRACT_WITH_CORE.md` — the exact contracts the Desktop must respect when consuming Core.
-- `docs/TESTING.md` — planned test matrix (install, launch, failure, recovery, upgrade, uninstall).
-- `reference/install-draft.mjs` — an **untested prototype draft** (ported from the Core repo) kept as reference material only. It is NOT the implementation and must not be treated as working code.
+- `docs/TESTING.md` — acceptance test matrix (install, launch, failure, recovery, upgrade, uninstall).
+- `reference/install-draft.mjs` — superseded untested prototype kept as reference material only.
+
+## Quick start
+
+### One-click (recommended for end users)
+
+1. Extract the full TerraFlow folder (keep it together).
+2. Double-click **`Install-TerraFlow.cmd`** and follow the window:
+   - installs Node.js automatically if needed (per-user, no admin rights),
+   - finds the Core checkout (`./core`, `TERRAFLOW_CORE_DIR`, or asks via a folder picker),
+   - stages everything, creates a **TerraFlow** icon on the Desktop and in the Start Menu,
+   - enables start-at-login, and opens TerraFlow in the browser.
+3. From then on: **double-click the TerraFlow desktop icon** any time. Use
+   *Start Menu → TerraFlow → Uninstall TerraFlow* to remove it.
+
+### From the CLI
+
+```sh
+# same as the one-click installer (add --no-launch / --no-autostart / --no-deps to customize)
+node bin/terraflow.mjs setup --core <path-to-core>
+
+# individual steps
+node bin/terraflow.mjs install --core <path-to-core>
+node bin/terraflow.mjs launch
+
+# inspect / stop
+node bin/terraflow.mjs status
+node bin/terraflow.mjs stop
+```
 
 ## Master handoff
 

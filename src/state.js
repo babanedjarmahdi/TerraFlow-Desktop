@@ -3,7 +3,9 @@ import path from 'path';
 
 export function readJson(file, fallback = null) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    const raw = fs.readFileSync(file, 'utf8');
+    const stripped = raw.startsWith('\uFEFF') ? raw.slice(1) : raw;
+    return JSON.parse(stripped);
   } catch {
     return fallback;
   }
