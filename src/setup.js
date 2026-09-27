@@ -17,7 +17,8 @@ export function coreCandidateRoots({ root = DESKTOP_ROOT, env = process.env } = 
     path.join(root, 'terraflow-core'),
     path.resolve(root, '..', 'TerraFlow-Core'),
     path.resolve(root, '..', 'terraflow-core'),
-    path.resolve(root, '..', 'Aguira-Tunnel'),
+    path.resolve(root, '..', 'TerraFlow'),
+    path.resolve(root, '..', 'New folder (2)'),
   ].filter(Boolean);
 }
 

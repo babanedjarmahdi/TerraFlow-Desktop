@@ -54,7 +54,7 @@ The Desktop depends on the Core through **defined contracts, build artifacts and
 - **Environment contract:** PostgreSQL connection variables, Groq/AI variables, watcher/source directories — documented in `docs/CONTRACT_WITH_CORE.md`.
 - **Data contract:** all runtime data lives under `<install>/output/` (jobs, workflows, watchers, templates, drafts, settings, uploads) and in the PostgreSQL volume.
 
-The Core repository (`TerraFlow` / `Aguira-Tunnel`) remains the source of truth for the Engine, API, Web/PWA, domain model, database contracts, artifact contracts, execution model, watcher contracts, and platform-independent product architecture.
+The Core repository (`TerraFlow`) remains the source of truth for the Engine, API, Web/PWA, domain model, database contracts, artifact contracts, execution model, watcher contracts, and platform-independent product architecture.
 
 ## Status
 

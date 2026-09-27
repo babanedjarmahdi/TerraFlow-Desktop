@@ -9,7 +9,7 @@ Date: 2026-09-06 · Scope: engine core + desktop runtime · Read-only audit, not
 | **Engine core** | `C:\Users\USER\Desktop\CRM_PRO\New folder (2)` | The real product: Express API + React/Vite web app + 5 workspace packages + Postgres + Vercel SPA deploy (v0.1 → v0.7.5) |
 | **Desktop runtime** | `C:\Users\USER\Desktop\CRM_PRO\TerraFlow-Desktop` | Local runtime wrapper: start/stop/supervise the core API process, Docker/Postgres boot, autostart, uninstall |
 
-> Git: a **single shared repo** at `C:\Users\USER\Desktop\CRM_PRO` (origin `github.com/babanedjarmahdi/Aguira-Tunnel`, branch `main`) spans the core, Desktop, and sibling products (`TerraFlow Dashboard`, `TerraFlow AMS`, `TerraFlow Ecosystem`, `TerraFlow ecosystem prototype`, `TerraFlow Matching system`).
+> Git: the **Core repo** `github.com/babanedjarmahdi/TerraFlow` (branch `main`) holds the Engine, API, Web/PWA and sibling products (`TerraFlow Dashboard`, `TerraFlow AMS`, `TerraFlow Ecosystem`, `TerraFlow ecosystem prototype`, `TerraFlow Matching system`); the **Desktop runtime** lives in its own repo `github.com/babanedjarmahdi/TerraFlow-Desktop`.
 
 ## 2. Current architecture (what exists today)
 
@@ -139,6 +139,6 @@ Desktop responsibilities (per contract): start the Core API process, serve web b
 ## 10. Outstanding discrepancies (audit trail)
 
 - Platform vendor conflict (GCP/AWS/Azure): **resolved** — no cloud platform in repo; only Vercel (static SPA) + local Docker Postgres.
-- Repo-init vendor (GitHub/GitLab/Codeberg): **resolved** — `origin github.com/babanedjarmahdi/Aguira-Tunnel`, branch `main`.
+- Repo-init vendor (GitHub/GitLab/Codeberg): **resolved** — Core `origin github.com/babanedjarmahdi/TerraFlow`, branch `main`; Desktop `github.com/babanedjarmahdi/TerraFlow-Desktop`.
 - Photos + matching location: **resolved with corrective finding** — they are sibling-product features, not core; migration plan must import, not extract.
 - Rules WIP tree vs committed v0.7.5: **open** — decision needed whether to commit rules.js first (freeze contract) before Phase 1.
