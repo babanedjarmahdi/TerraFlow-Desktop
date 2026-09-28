@@ -10,7 +10,7 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.vite', 'dist', 'coverage', 
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
-export async function install({ coreDir, installDir, log, withDeps = true, desktopDir = null }) {
+export async function install({ coreDir, installDir, log, withDeps = true, desktopDir = null, recordSource = true }) {
   if (path.resolve(coreDir) === path.resolve(installDir)) {
     throw new Error('--core must point at a Core checkout that differs from the install dir');
   }
@@ -69,12 +69,15 @@ export async function install({ coreDir, installDir, log, withDeps = true, deskt
   copyTree(path.join(desktopRoot, 'assets'), path.join(installDir, 'assets'));
   fs.copyFileSync(path.join(desktopRoot, 'package.json'), path.join(installDir, 'desktop-package.json'));
 
-  writeSourceRecord(installDir, { coreDir, desktopDir: desktopRoot });
+  if (recordSource) {
+    writeSourceRecord(installDir, { coreDir, desktopDir: desktopRoot });
+  } else {
+    const rec = sourceRecordPath(installDir);
+    if (fs.existsSync(rec)) fs.rmSync(rec, { force: true });
+  }
 
   if (!webBundleExists(installDir)) {
-    log.warn(
-      'no web bundle found in Core apps/api/public - UI will 404 until a build is staged (watchers still run via API)'
-    );
+    log.warn('no web bundle found in Core apps/api/public - UI will 404 until a build is staged (watchers still run via API)');
   }
 
   if (withDeps) {
